@@ -13,7 +13,6 @@ fi
 echo "[*] Applying kernel 4.19 compatibility fixes to SukiSU..."
 
 # Fix 1: Add fallthrough macro for kernel < 5.4
-# In kernel_includes.h, add before the final #endif
 if ! grep -q "define fallthrough" "$KSU_DIR/kernel_includes.h" 2>/dev/null; then
     sed -i '/#endif \/\/ __KSU_H_KERNEL_INCLUDES/i\
 \
@@ -26,38 +25,34 @@ if ! grep -q "define fallthrough" "$KSU_DIR/kernel_includes.h" 2>/dev/null; then
     echo "  [+] Added fallthrough compat macro"
 fi
 
-# Fix 2: Add stub implementations for selinux_hide functions on kernel < 5.10
-# The real selinux_hide.c uses 5.10+ internal SELinux structs (status_lock, status_page, policy)
-# so it CANNOT compile on 4.19. Instead, we provide no-op stubs after the #endif.
+# Fix 2: Add no-op stubs for selinux_hide functions on kernel < 5.10
+# selinux_hide.c uses 5.10+ internal SELinux structs and CANNOT compile on 4.19.
 if ! grep -q "compat_selinux_hide_stubs" "$KSU_DIR/ksu.c" 2>/dev/null; then
-    python3 -c "
-import re
-with open('$KSU_DIR/ksu.c', 'r') as f:
-    content = f.read()
+    # Find the line number of "#include "runtime/ksud.c""
+    KSUD_LINE=$(grep -n '#include "runtime/ksud.c"' "$KSU_DIR/ksu.c" | head -1 | cut -d: -f1)
+    if [ -n "$KSUD_LINE" ]; then
+        # Split file: everything before KSUD_LINE, stubs, everything from KSUD_LINE onward
+        TMPFILE=$(mktemp)
+        head -n $((KSUD_LINE - 1)) "$KSU_DIR/ksu.c" > "$TMPFILE"
+        cat >> "$TMPFILE" << 'STUBEOF'
 
-# Find the '#endif' after selinux_hide.c include and add stubs before it
-stubs = '''
-/* compat: no-op stubs for kernel < 5.10 where selinux_hide.c is excluded */
+/* compat_selinux_hide_stubs: no-op stubs for kernel < 5.10 */
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
-/* compat_selinux_hide_stubs */
 static inline void ksu_selinux_hide_handle_post_fs_data(void) {}
 static inline void ksu_selinux_hide_handle_second_stage(void) {}
 static inline void ksu_selinux_hide_drop_backup_if_unused(void) {}
 #endif
-'''
-# Insert stubs between '#endif' (the one closing selinux_hide.c guard) and '#include "runtime/ksud.c"'
-pattern = r'(#endif\s*\n)(#include \"runtime/ksud\.c\")'
-replacement = r'\1' + stubs.strip() + '\n\n\2'
-content = re.sub(pattern, replacement, content, count=1)
 
-with open('$KSU_DIR/ksu.c', 'w') as f:
-    f.write(content)
-"
-    echo "  [+] Added selinux_hide stubs for kernel < 5.10"
+STUBEOF
+        tail -n +${KSUD_LINE} "$KSU_DIR/ksu.c" >> "$TMPFILE"
+        mv "$TMPFILE" "$KSU_DIR/ksu.c"
+        echo "  [+] Added selinux_hide stubs for kernel < 5.10 (before line $KSUD_LINE)"
+    else
+        echo "  [-] Could not find #include runtime/ksud.c in ksu.c"
+    fi
 fi
 
 # Fix 3: Fix USER_ARG_NULL dereference in sulog/event.c
-# user_arg_null_ptr() returns a pointer, but the parameter expects a value
 if grep -q '#define USER_ARG_NULL user_arg_null_ptr()' "$KSU_DIR/sulog/event.c"; then
     sed -i 's/#define USER_ARG_NULL user_arg_null_ptr()/#define USER_ARG_NULL (*user_arg_null_ptr())/' "$KSU_DIR/sulog/event.c"
     echo "  [+] Fixed USER_ARG_NULL pointer dereference"
