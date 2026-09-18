@@ -26,31 +26,34 @@ if ! grep -q "define fallthrough" "$KSU_DIR/kernel_includes.h" 2>/dev/null; then
     echo "  [+] Added fallthrough compat macro"
 fi
 
-# Fix 2: Remove version guard around selinux_hide.c inclusion in ksu.c
-# The file handles its own version checks internally
-if grep -q 'feature/selinux_hide.c' "$KSU_DIR/ksu.c"; then
+# Fix 2: Add stub implementations for selinux_hide functions on kernel < 5.10
+# The real selinux_hide.c uses 5.10+ internal SELinux structs (status_lock, status_page, policy)
+# so it CANNOT compile on 4.19. Instead, we provide no-op stubs after the #endif.
+if ! grep -q "compat_selinux_hide_stubs" "$KSU_DIR/ksu.c" 2>/dev/null; then
     python3 -c "
 import re
 with open('$KSU_DIR/ksu.c', 'r') as f:
-    lines = f.readlines()
+    content = f.read()
 
-new_lines = []
-for i, line in enumerate(lines):
-    if 'include \"feature/selinux_hide.c\"' in line:
-        if new_lines and 'KERNEL_VERSION(5, 10, 0)' in new_lines[-1]:
-            new_lines.pop()
-        new_lines.append(line)
-        for j in range(i+1, min(i+3, len(lines))):
-            if lines[j].strip() == '#endif':
-                lines[j] = ''
-                break
-        continue
-    new_lines.append(line)
+# Find the '#endif' after selinux_hide.c include and add stubs before it
+stubs = '''
+/* compat: no-op stubs for kernel < 5.10 where selinux_hide.c is excluded */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
+/* compat_selinux_hide_stubs */
+static inline void ksu_selinux_hide_handle_post_fs_data(void) {}
+static inline void ksu_selinux_hide_handle_second_stage(void) {}
+static inline void ksu_selinux_hide_drop_backup_if_unused(void) {}
+#endif
+'''
+# Insert stubs between '#endif' (the one closing selinux_hide.c guard) and '#include "runtime/ksud.c"'
+pattern = r'(#endif\s*\n)(#include \"runtime/ksud\.c\")'
+replacement = r'\1' + stubs.strip() + '\n\n\2'
+content = re.sub(pattern, replacement, content, count=1)
 
 with open('$KSU_DIR/ksu.c', 'w') as f:
-    f.writelines(new_lines)
+    f.write(content)
 "
-    echo "  [+] Removed selinux_hide.c version guard"
+    echo "  [+] Added selinux_hide stubs for kernel < 5.10"
 fi
 
 # Fix 3: Fix USER_ARG_NULL dereference in sulog/event.c
