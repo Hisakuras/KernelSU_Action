@@ -77,6 +77,18 @@ susfs_apply() {
 		# Fall back to whatever 50_* patch the branch actually ships.
 		kernel_patch=$(find "$kp" -maxdepth 1 -name '50_add_susfs_in_*.patch' | head -n1)
 	}
+	# In-repo override. Some vendor trees (MTK / OPPO / realme) insert their own
+	# fields between ANDROID_KABI_RESERVE(8) and randomized_struct_fields_end, so
+	# the upstream 4.19 patch cannot reach the end of task_struct even at
+	# --fuzz=3. A context-adapted copy of the same patch lives in patches/ for
+	# those trees; it applies strictly to include/linux/sched.h and is otherwise
+	# byte-identical to the upstream one.
+	local override="${REPO_ROOT}/patches/50_add_susfs_in_${branch}.patch"
+	if [ -f "$override" ]; then
+		info "using in-repo patch override: patches/50_add_susfs_in_${branch}.patch"
+		kernel_patch="$override"
+	fi
+
 	[ -n "$kernel_patch" ] && [ -f "$kernel_patch" ] \
 		|| die "no 50_add_susfs_in_*.patch found in ${kp}"
 
