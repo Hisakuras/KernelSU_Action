@@ -175,6 +175,10 @@ jobs:
         if: env.KSU_VARIANT != 'none'
         run: bash scripts/kernelsu.sh
 
+      - name: Fix kernel 4.19 compat issues in SukiSU
+        if: env.KERNEL_VERSION == '4.19'
+        run: bash scripts/compat419_fix.sh
+
       - name: Apply kernel patches
         run: bash scripts/patches.sh all
 
